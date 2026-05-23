@@ -1,0 +1,9 @@
+models/
+.venv/
+dist/
+build/
+config.json
+*.spec
+__pycache__/
+*.pyc
+*.pyo
