@@ -24,23 +24,51 @@ from transcriber import AudioTranscriber
 from llm import LLMProcessor
 from download_models import download_model
 
-CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "config.json")
+def _get_runtime_dir():
+    """运行目录：exe 模式用 exe 所在目录，开发模式用脚本目录"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_PATH = os.path.join(_get_runtime_dir(), "config.json")
+
+
+def get_base_dir():
+    """获取基础目录：exe 运行时用 exe 所在目录（可写），开发时用脚本所在目录"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
 
 
 def load_config():
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+    """加载配置（运行目录优先，其次 AppData）"""
+    paths = [CONFIG_PATH,
+             os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                          "实时语音转文字", "config.json")]
+    for p in paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
     return {}
 
 
-def save_config(cfg: dict):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, ensure_ascii=False, indent=2)
+def save_config(cfg: dict) -> bool:
+    """保存配置到运行目录，失败则回退 AppData"""
+    paths = [CONFIG_PATH,
+             os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                          "实时语音转文字", "config.json")]
+    for p in paths:
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 # ═══════════════════════════════════════════
@@ -70,14 +98,14 @@ AI 助 手 上 线
 
 
 # ═══════════════════════════════════════════
-# 设置对话框（双标签页）
+# 设置对话框（滚动单页布局）
 # ═══════════════════════════════════════════
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, config: dict, on_save):
         super().__init__(parent)
         self.title("LLM 设置")
-        self.geometry("560x760")
-        self.resizable(False, False)
+        self.geometry("560x600")
+        self.minsize(440, 400)
         self.configure(bg="#FFFFFF")
         self.transient(parent)
         self.grab_set()
@@ -87,169 +115,154 @@ class SettingsDialog(tk.Toplevel):
 
         font = ("Microsoft YaHei", 12)
         font_small = ("Microsoft YaHei", 10)
-        font_prompt = ("Consolas", 10)  # 等宽，方便编辑 prompt
+        font_prompt = ("Consolas", 10)
 
-        # ── 标签页 ──
-        notebook = ttk.Notebook(self)
-        notebook.pack(fill=tk.BOTH, expand=True, padx=16, pady=(16, 8))
-
-        # Tab 1: 润色
-        polish_tab = tk.Frame(notebook, bg="#FFFFFF")
-        notebook.add(polish_tab, text="  润色 LLM  ")
-        self._build_llm_form(polish_tab, font, font_small, font_prompt,
-                             prefix="llm", label="润色 LLM 配置",
-                             show_append_toggle=True)
-
-        # Tab 2: 口译
-        interp_tab = tk.Frame(notebook, bg="#FFFFFF")
-        notebook.add(interp_tab, text="  口译 LLM  ")
-        self._build_llm_form(interp_tab, font, font_small, font_prompt,
-                             prefix="llm2", label="口译笔记 LLM 配置",
-                             default_model="gpt-4o-mini",
-                             default_interval="8",
-                             default_prompt=INTERPRETER_SYSTEM_PROMPT,
-                             show_append_toggle=True)
-
-        # Tab 3: 关于
-        about_tab = tk.Frame(notebook, bg="#FFFFFF")
-        notebook.add(about_tab, text="  关于  ")
-        about_font = ("Microsoft YaHei", 12)
-        about_pad = {"padx": 32, "pady": (20, 0)}
-
-        tk.Label(about_tab, text="实时语音转文字", bg="#FFFFFF",
-                 fg="#1A1A1A", font=("Microsoft YaHei", 20, "bold")
-                 ).pack(anchor=tk.CENTER, pady=(40, 8))
-        tk.Label(about_tab, text="Real-time Speech to Text", bg="#FFFFFF",
-                 fg="#888888", font=("Microsoft YaHei", 12)
-                 ).pack(anchor=tk.CENTER, pady=(0, 32))
-
-        tk.Label(about_tab, text="作者：pipidu", bg="#FFFFFF",
-                 fg="#555555", font=about_font).pack(anchor=tk.CENTER)
-        link_lbl = tk.Label(
-            about_tab, text="github.com/pipidu", bg="#FFFFFF",
-            fg="#2A6E3F", font=("Microsoft YaHei", 12, "underline"),
-            cursor="hand2",
-        )
-        link_lbl.pack(anchor=tk.CENTER, pady=(4, 0))
-        link_lbl.bind("<Button-1>", lambda e: __import__("webbrowser").open(
-            "https://github.com/pipidu"))
-
-        tk.Label(about_tab,
-                 text="基于 Sherpa-ONNX + tkinter\n"
-                      "支持中英文实时流式语音识别\n"
-                      "LLM 润色 & AI 口译笔记",
-                 bg="#FFFFFF", fg="#AAAAAA",
-                 font=("Microsoft YaHei", 10), justify=tk.CENTER
-                 ).pack(anchor=tk.CENTER, pady=(32, 0))
-
-        # ── 按钮 ──
+        # ── 底部按钮 ──
         btn_frame = tk.Frame(self, bg="#FFFFFF")
-        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=16)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=12)
 
         tk.Button(btn_frame, text="取消", bg="#EEEEEE", fg="#333333",
                   font=font, relief=tk.FLAT, padx=24, pady=6,
-                  activebackground="#DDDDDD",
                   cursor="hand2", command=self.destroy).pack(side=tk.RIGHT)
 
         tk.Button(btn_frame, text="保存", bg="#1A1A1A", fg="#FFFFFF",
                   font=font, relief=tk.FLAT, padx=24, pady=6,
-                  activebackground="#333333", activeforeground="#FFFFFF",
                   cursor="hand2", command=self._save).pack(
             side=tk.RIGHT, padx=(0, 12))
 
+        # ── 滚动区域 ──
+        canvas = tk.Canvas(self, bg="#FFFFFF", highlightthickness=0)
+        scrollbar = tk.Scrollbar(self, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16, 0), pady=(12, 0))
+
+        inner = tk.Frame(canvas, bg="#FFFFFF")
+        canvas.create_window((0, 0), window=inner, anchor=tk.NW, width=520)
+
+        # ── 润色 LLM 配置 ──
+        self._build_section(inner, font, font_small, font_prompt,
+                            prefix="llm", title="🎨 润色 LLM",
+                            default_model="gpt-4o-mini", default_interval="5")
+
+        # 分隔线
+        tk.Frame(inner, bg="#EEEEEE", height=1).pack(fill=tk.X, padx=16, pady=12)
+
+        # ── 口译 LLM 配置 ──
+        self._build_section(inner, font, font_small, font_prompt,
+                            prefix="llm2", title="📝 口译笔记 LLM",
+                            default_model="gpt-4o-mini", default_interval="8",
+                            default_prompt=INTERPRETER_SYSTEM_PROMPT)
+
+        # 分隔线
+        tk.Frame(inner, bg="#EEEEEE", height=1).pack(fill=tk.X, padx=16, pady=12)
+
+        # ── 关于 ──
+        about = tk.Frame(inner, bg="#FFFFFF")
+        about.pack(fill=tk.X, padx=16, pady=(0, 12))
+        tk.Label(about, text="实时语音转文字", bg="#FFFFFF",
+                 fg="#1A1A1A", font=("Microsoft YaHei", 14, "bold")
+                 ).pack()
+        tk.Label(about, text="作者：pipidu  |  github.com/pipidu", bg="#FFFFFF",
+                 fg="#888888", font=font_small).pack(pady=(4, 0))
+
+        # ── 更新滚动区域 ──
+        inner.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+        # 鼠标滚轮支持
+        def _on_mousewheel(event):
+            canvas.yview_scroll(-1 * (event.delta // 120), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self._wheel_binding = _on_mousewheel
+
         self._center()
 
-    def _build_llm_form(self, parent, font, font_small, font_prompt,
-                        prefix, label,
-                        default_model="gpt-4o-mini", default_interval="5",
-                        default_prompt="", show_append_toggle=False):
-        pad = {"padx": 16, "pady": (10, 0)}
+    def _build_section(self, parent, font, font_small, font_prompt,
+                       prefix, title,
+                       default_model="gpt-4o-mini", default_interval="5",
+                       default_prompt=""):
         cf = self._config
+        pad = {"padx": 16, "pady": (6, 0)}
 
         # 标题
-        tk.Label(parent, text=label, bg="#FFFFFF",
-                 fg="#333333", font=("Microsoft YaHei", 11, "bold"),
-                 anchor=tk.W).pack(fill=tk.X, padx=16, pady=(10, 2))
+        tk.Label(parent, text=title, bg="#FFFFFF",
+                 fg="#333333", font=("Microsoft YaHei", 12, "bold"),
+                 anchor=tk.W).pack(fill=tk.X, padx=16, pady=(8, 4))
 
-        # URL
-        tk.Label(parent, text="API 地址", bg="#FFFFFF",
-                 fg="#888888", font=font_small).pack(anchor=tk.W, **pad)
-        var_url = tk.StringVar(
-            value=cf.get(f"{prefix}_url", "https://api.openai.com/v1"))
-        tk.Entry(parent, textvariable=var_url, font=font,
+        # ── API 地址 + Key 同行 ──
+        row1 = tk.Frame(parent, bg="#FFFFFF")
+        row1.pack(fill=tk.X, padx=16, pady=(4, 0))
+        tk.Label(row1, text="API 地址", bg="#FFFFFF", fg="#888888",
+                 font=font_small).pack(anchor=tk.W)
+        var_url = tk.StringVar(value=cf.get(f"{prefix}_url", "https://api.openai.com/v1"))
+        tk.Entry(row1, textvariable=var_url, font=font,
                  bg="#FAFAFA", relief=tk.FLAT, borderwidth=1,
                  highlightbackground="#E0E0E0",
-                 highlightthickness=1).pack(fill=tk.X, padx=16, pady=(2, 0))
+                 highlightthickness=1).pack(fill=tk.X, pady=(2, 0))
         setattr(self, f"_{prefix}_url_var", var_url)
 
-        # Key
-        tk.Label(parent, text="API Key", bg="#FFFFFF",
-                 fg="#888888", font=font_small).pack(anchor=tk.W, **pad)
+        tk.Label(row1, text="API Key", bg="#FFFFFF", fg="#888888",
+                 font=font_small).pack(anchor=tk.W, pady=(6, 0))
         var_key = tk.StringVar(value=cf.get(f"{prefix}_key", ""))
-        tk.Entry(parent, textvariable=var_key, font=font,
+        tk.Entry(row1, textvariable=var_key, font=font,
                  bg="#FAFAFA", relief=tk.FLAT, borderwidth=1,
-                 highlightbackground="#E0E0E0",
-                 highlightthickness=1, show="•").pack(
-            fill=tk.X, padx=16, pady=(2, 0))
+                 highlightbackground="#E0E0E0", highlightthickness=1,
+                 show="•").pack(fill=tk.X, pady=(2, 0))
         setattr(self, f"_{prefix}_key_var", var_key)
 
-        # Model
-        tk.Label(parent, text="模型名称", bg="#FFFFFF",
-                 fg="#888888", font=font_small).pack(anchor=tk.W, **pad)
-        var_model = tk.StringVar(
-            value=cf.get(f"{prefix}_model", default_model))
-        tk.Entry(parent, textvariable=var_model, font=font,
+        # ── 模型 + 间隔 同行 ──
+        row2 = tk.Frame(parent, bg="#FFFFFF")
+        row2.pack(fill=tk.X, padx=16, pady=(6, 0))
+
+        mf = tk.Frame(row2, bg="#FFFFFF")
+        mf.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Label(mf, text="模型", bg="#FFFFFF", fg="#888888",
+                 font=font_small).pack(anchor=tk.W)
+        var_model = tk.StringVar(value=cf.get(f"{prefix}_model", default_model))
+        tk.Entry(mf, textvariable=var_model, font=font,
                  bg="#FAFAFA", relief=tk.FLAT, borderwidth=1,
                  highlightbackground="#E0E0E0",
-                 highlightthickness=1).pack(fill=tk.X, padx=16, pady=(2, 0))
+                 highlightthickness=1).pack(fill=tk.X, pady=(2, 0))
         setattr(self, f"_{prefix}_model_var", var_model)
 
-        # Interval
-        tk.Label(parent, text="处理间隔（秒）", bg="#FFFFFF",
-                 fg="#888888", font=font_small).pack(anchor=tk.W, **pad)
-        iv_f = tk.Frame(parent, bg="#FFFFFF")
-        iv_f.pack(fill=tk.X, padx=16, pady=(2, 0))
-        var_iv = tk.StringVar(
-            value=str(cf.get(f"{prefix}_interval", int(default_interval))))
-        tk.Entry(iv_f, textvariable=var_iv, font=font, width=6,
+        ivf = tk.Frame(row2, bg="#FFFFFF")
+        ivf.pack(side=tk.LEFT, padx=(16, 0))
+        tk.Label(ivf, text="间隔(秒)", bg="#FFFFFF", fg="#888888",
+                 font=font_small).pack(anchor=tk.W)
+        var_iv = tk.StringVar(value=str(cf.get(f"{prefix}_interval", int(default_interval))))
+        tk.Entry(ivf, textvariable=var_iv, font=font, width=4,
                  bg="#FAFAFA", relief=tk.FLAT, borderwidth=1,
                  highlightbackground="#E0E0E0",
-                 highlightthickness=1).pack(side=tk.LEFT)
-        tk.Label(iv_f, text="  秒", bg="#FFFFFF", fg="#AAAAAA",
-                 font=font_small).pack(side=tk.LEFT)
+                 highlightthickness=1).pack(pady=(2, 0))
         setattr(self, f"_{prefix}_interval_var", var_iv)
 
         # ── System Prompt ──
-        tk.Label(parent, text="System Prompt（留空则使用内置默认）",
-                 bg="#FFFFFF", fg="#888888", font=font_small
-                 ).pack(anchor=tk.W, **pad)
+        tk.Label(parent, text="System Prompt（留空使用内置默认）",
+                 bg="#FFFFFF", fg="#888888",
+                 font=font_small).pack(anchor=tk.W, padx=16, pady=(8, 0))
         prompt_text = tk.Text(
             parent, font=font_prompt, bg="#FAFAFA", fg="#333333",
             wrap=tk.WORD, relief=tk.FLAT, borderwidth=1,
             highlightbackground="#C0C0C0", highlightthickness=1,
-            height=10, padx=8, pady=8,
+            height=4, padx=8, pady=6,
         )
-        prompt_text.pack(fill=tk.BOTH, expand=True, padx=16, pady=(2, 6))
-        stored_prompt = cf.get(f"{prefix}_prompt", "")
-        if stored_prompt:
-            prompt_text.insert("1.0", stored_prompt)
-        else:
-            prompt_text.insert("1.0", default_prompt)
+        prompt_text.pack(fill=tk.X, padx=16, pady=(2, 0))
+        stored = cf.get(f"{prefix}_prompt", "")
+        prompt_text.insert("1.0", stored or default_prompt)
         setattr(self, f"_{prefix}_prompt_text", prompt_text)
 
-        # ── 追加模式开关（仅口译标签页） ──
-        if show_append_toggle:
-            append_var = tk.BooleanVar(
-                value=cf.get(f"{prefix}_append", False))
-            cb = tk.Checkbutton(
-                parent, text="追加模式：新内容只新增，不覆盖已有笔记",
-                variable=append_var, bg="#FFFFFF", fg="#555555",
-                font=font_small, selectcolor="#FFFFFF",
-                activebackground="#FFFFFF",
-                cursor="hand2",
-            )
-            cb.pack(anchor=tk.W, padx=16, pady=(2, 4))
-            setattr(self, f"_{prefix}_append_var", append_var)
+        # ── 追加模式 ──
+        append_var = tk.BooleanVar(value=cf.get(f"{prefix}_append", False))
+        cb = tk.Checkbutton(
+            parent, text="追加模式（不覆盖已有内容）",
+            variable=append_var, bg="#FFFFFF", fg="#555555",
+            font=font_small, selectcolor="#FFFFFF",
+            activebackground="#FFFFFF", cursor="hand2",
+        )
+        cb.pack(anchor=tk.W, padx=16, pady=(6, 4))
+        setattr(self, f"_{prefix}_append_var", append_var)
 
     def _center(self):
         self.update_idletasks()
@@ -266,30 +279,31 @@ class SettingsDialog(tk.Toplevel):
                     raise ValueError
             except ValueError:
                 messagebox.showwarning(
-                    "无效输入", f"{label} 处理间隔必须是≥1的数字", parent=self)
+                    "无效输入", f"{label} 间隔必须是≥1的数字", parent=self)
                 return
 
         cfg = self._config.copy()
         for prefix in ["llm", "llm2"]:
-            cfg[f"{prefix}_url"] = getattr(
-                self, f"_{prefix}_url_var").get().strip()
-            cfg[f"{prefix}_key"] = getattr(
-                self, f"_{prefix}_key_var").get().strip()
-            cfg[f"{prefix}_model"] = getattr(
-                self, f"_{prefix}_model_var").get().strip()
-            cfg[f"{prefix}_interval"] = float(
-                getattr(self, f"_{prefix}_interval_var").get())
-            # 保存自定义 prompt（去掉首尾空白）
-            prompt_widget = getattr(self, f"_{prefix}_prompt_text")
-            cfg[f"{prefix}_prompt"] = prompt_widget.get("1.0", "end-1c").strip()
-            # 保存追加模式（仅 llm2 有此选项）
-            if hasattr(self, f"_{prefix}_append_var"):
-                cfg[f"{prefix}_append"] = getattr(
-                    self, f"_{prefix}_append_var").get()
+            cfg[f"{prefix}_url"] = getattr(self, f"_{prefix}_url_var").get().strip()
+            cfg[f"{prefix}_key"] = getattr(self, f"_{prefix}_key_var").get().strip()
+            cfg[f"{prefix}_model"] = getattr(self, f"_{prefix}_model_var").get().strip()
+            cfg[f"{prefix}_interval"] = float(getattr(self, f"_{prefix}_interval_var").get())
+            cfg[f"{prefix}_prompt"] = getattr(self, f"_{prefix}_prompt_text").get("1.0", "end-1c").strip()
+            cfg[f"{prefix}_append"] = getattr(self, f"_{prefix}_append_var").get()
 
-        save_config(cfg)
+        ok = save_config(cfg)
+        if not ok:
+            messagebox.showwarning("保存失败", "无法写入配置文件。", parent=self)
         self._on_save(cfg)
+        # 解绑滚轮
+        if hasattr(self, '_wheel_binding'):
+            self.unbind_all("<MouseWheel>")
         self.destroy()
+
+    def destroy(self):
+        if hasattr(self, '_wheel_binding'):
+            self.unbind_all("<MouseWheel>")
+        super().destroy()
 
 
 # ═══════════════════════════════════════════
@@ -315,8 +329,7 @@ class ModelDownloader(tk.Toplevel):
 
         self._missing = missing
         self._var_map = {}
-        self._model_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "models")
+        self._model_dir = os.path.join(get_base_dir(), "models")
 
         font = ("Microsoft YaHei", 12)
         font_small = ("Microsoft YaHei", 10)
@@ -486,8 +499,7 @@ class App(tk.Tk):
         self._llm2: LLMProcessor | None = None         # 口译
         self._full_transcript = ""
 
-        self._model_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "models")
+        self._model_dir = os.path.join(get_base_dir(), "models")
         self._config = load_config()
 
         self._build_ui()
@@ -760,13 +772,23 @@ class App(tk.Tk):
             self._panes.grid_columnconfigure(i, weight=1, uniform="col")
 
     # ── 启动／停止 ──
+    def _find_model_dir(self, lang: str) -> str | None:
+        """查找模型目录：先查 exe 旁，再查捆绑包"""
+        d = os.path.join(self._model_dir, lang)
+        if os.path.exists(os.path.join(d, "tokens.txt")):
+            return d
+        if getattr(sys, "frozen", False):
+            bundled = os.path.join(sys._MEIPASS, "models", lang)
+            if os.path.exists(os.path.join(bundled, "tokens.txt")):
+                return bundled
+        return None
+
     def _missing_models(self):
         """返回缺失的模型列表"""
         all_lang = {"zh": "中文", "en": "English", "bilingual": "中英混合"}
         missing = []
         for code, name in all_lang.items():
-            lang_dir = os.path.join(self._model_dir, code)
-            if not os.path.exists(os.path.join(lang_dir, "tokens.txt")):
+            if self._find_model_dir(code) is None:
                 missing.append((code, name))
         return missing
 
@@ -781,12 +803,14 @@ class App(tk.Tk):
 
         source = "microphone" if self._audio_var.get() == "麦克风" else "system"
 
-        lang_dir = os.path.join(self._model_dir, lang)
-        if not os.path.exists(os.path.join(lang_dir, "tokens.txt")):
+        found = self._find_model_dir(lang)
+        if found is None:
             self._set_status(f"❌ 未找到 {lang_label} 模型，正在下载…")
             self.after(100, lambda: ModelDownloader(
                 self, [(lang, lang_label)]))
             return
+        # 临时用找到的模型根目录
+        model_root = os.path.dirname(found)
 
         self._full_transcript = ""
         for t in (self._raw_text, self._llm_text, self._interp_text):
@@ -801,7 +825,7 @@ class App(tk.Tk):
         # ASR
         self._transcriber = AudioTranscriber(
             lang=lang, source=source,
-            model_dir=self._model_dir, use_gpu=True,
+            model_dir=model_root, use_gpu=True,
         )
         self._transcriber.on_partial = self._on_raw_partial
         self._transcriber.on_final   = self._on_raw_final

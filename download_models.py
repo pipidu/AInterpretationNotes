@@ -10,6 +10,13 @@ import tarfile
 import requests
 from pathlib import Path
 
+
+def _get_base_dir():
+    """exe 运行时写入 exe 所在目录，开发时写入脚本所在目录"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
 # 模型配置：名称 -> (文件名, 模型类型)
 MODELS = {
     "zh": {
@@ -97,7 +104,7 @@ def download_model(lang: str, use_mirror: bool = False) -> bool:
         return False
 
     info = models[lang]
-    dest_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+    dest_dir = os.path.join(_get_base_dir(), "models")
     lang_dir = os.path.join(dest_dir, lang)
 
     # 检查是否已存在
